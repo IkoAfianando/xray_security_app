@@ -18,6 +18,7 @@ interface UsageLog {
   activation_time: string;
   operational_duration: number;
   error_log?: string;
+  operator: Operator;
 }
 
 export default function Home() {
