@@ -161,7 +161,7 @@ export default function Home() {
             <ul style={{ listStyleType: 'none', paddingLeft: '0' }}>
               {usageLogs.map((log) => (
                 <li key={log.id} style={{ borderBottom: '1px solid #eee', padding: '8px 0' }}>
-                  {log.role}: {log.operator_id}, Duration: {log.operational_duration}s, Activated at:{' '}
+                  {log.operator.role}: {log.operator_id}, Duration: {log.operational_duration}s, Activated at:{' '}
                   {new Date(log.activation_time).toLocaleString()}
                   {log.error_log ? <span style={{color: 'red'}}>, Error: {log.error_log}</span> : ''}
                 </li>

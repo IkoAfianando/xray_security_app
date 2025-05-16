@@ -10,8 +10,6 @@ const char* password = "PasswordWiFiAnda";
 
 // ----- Konfigurasi Server API -----
 const char* serverName = "http://<alamat_ip_server_api>:<port_api>/audit-log";
-const char* otherServerName = "http://<alamat_ip_server_api>:<port_api>/other-pointing-logic";
-
 // ----- Konfigurasi Sensor Sidik Jari R307 -----
 // *** Sesuaikan pin RX dan TX sesuai dengan koneksi Anda ke ESP32 ***
 // Contoh menggunakan SoftwareSerial pada pin 2 (RX ESP) dan 3 (TX ESP)

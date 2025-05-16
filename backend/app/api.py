@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app import models, schemas
 from app.database import get_db
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -104,6 +104,7 @@ def create_usage_log(usage_log: schemas.UsageLogCreate, db: Session = Depends(ge
     return db_usage_log
 
 @router.get("/usage_logs/")
-def get_usage_logs(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current_user: models.Operator = Depends(get_current_user)):
-    logs = db.query(models.UsageLog).offset(skip).limit(limit).all()
+def get_usage_logs(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    # join as well to operator to get the role and return an array of object 
+    logs = db.query(models.UsageLog).join(models.Operator).options(joinedload(models.UsageLog.operator)).offset(skip).limit(limit).all()
     return logs
