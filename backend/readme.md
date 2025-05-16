@@ -24,7 +24,7 @@ Ini adalah backend REST API untuk aplikasi X-Ray Security, dibangun menggunakan 
 #### 1. Clone Repository ini
 
 ```bash
-git clone 
+git clone https://github.com/IkoAfianando/xray_security_app/tree/master/backend
 cd backend
 ```
 
