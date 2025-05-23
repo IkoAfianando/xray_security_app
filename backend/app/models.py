@@ -7,6 +7,7 @@ from .database import Base
 class Operator(Base):
     __tablename__ = "operators"
 
+    # integer serial key 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     fingerprint_id = Column(Integer, unique=True)
@@ -42,11 +43,10 @@ class AttendanceLog(Base):
     
     operator = relationship("Operator", back_populates="attendance_logs")
 
-
 class TokenBlacklist(Base):
     __tablename__ = "token_blacklist"
     
     id = Column(Integer, primary_key=True, index=True)
     token = Column(String, unique=True, index=True)
     blacklisted_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime)  # Untuk cleanup otomatis
+    expires_at = Column(DateTime)

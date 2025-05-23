@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, joinedload
 from app import models, schemas
 from app.database import get_db
@@ -6,7 +7,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import jwt
-from typing import List
+from typing import List, Optional
 
 SECRET_KEY = "REAL_MADRID_THE_BEST_CLUB_IN_THE_WORLD"
 ALGORITHM = "HS256"
@@ -45,14 +46,11 @@ def authenticate_user(db, fingerprint_id: int, password: str):
     return user
 
 def is_token_blacklisted(token: str, db: Session):
-    """Check if token is in blacklist"""
     blacklisted = db.query(models.TokenBlacklist).filter(models.TokenBlacklist.token == token).first()
     return blacklisted is not None
 
 def add_token_to_blacklist(token: str, db: Session):
-    """Add token to blacklist"""
     try:
-        # Decode token to get expiration time
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         exp_timestamp = payload.get("exp")
         expires_at = datetime.fromtimestamp(exp_timestamp) if exp_timestamp else datetime.utcnow() + timedelta(hours=1)
@@ -74,7 +72,6 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect fingerprint ID or password")
     
-    # Check if user has admin role for dashboard access
     if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     
@@ -88,7 +85,8 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             "id": user.id,
             "name": user.name,
             "fingerprint_id": user.fingerprint_id,
-            "role": user.role
+            "role": user.role,
+            "email": user.email
         }
     }
 
@@ -99,7 +97,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    # Check if token is blacklisted
     if is_token_blacklisted(token, db):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -125,14 +122,98 @@ def require_admin(current_user: models.Operator = Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current_user
 
+# Operators/Users endpoints
+@router.post("/operators/", response_model=schemas.OperatorResponse)
+def create_operator(operator: schemas.OperatorCreate, db: Session = Depends(get_db), current_user: models.Operator = Depends(require_admin)):
+    # Check if fingerprint_id already exists
+    existing_operator = db.query(models.Operator).filter(models.Operator.fingerprint_id == operator.fingerprint_id).first()
+    if existing_operator:
+        raise HTTPException(status_code=400, detail="Fingerprint ID already registered")
+    
+    # Check if email already exists
+    if operator.email:
+        existing_email = db.query(models.Operator).filter(models.Operator.email == operator.email).first()
+        if existing_email:
+            raise HTTPException(status_code=400, detail="Email already registered")
+    # generated_uuid = str(uuid.uuid4())
+    hashed_password = get_password_hash(operator.password)
+    db_operator = models.Operator(        
+        name=operator.name,
+        fingerprint_id=operator.fingerprint_id,
+        role=operator.role,
+        email=operator.email,
+        phone=operator.phone,
+        status=operator.status,
+        password_hash=hashed_password
+    )
+    db.add(db_operator)
+    db.commit()
+    db.refresh(db_operator)
+    return db_operator
+
+@router.get("/operators/", response_model=List[schemas.OperatorResponse])
+def get_all_operators(
+    skip: int = 0, 
+    limit: int = 100, 
+    search: Optional[str] = Query(None, description="Search by name or email"),
+    status_filter: Optional[str] = Query(None, description="Filter by status"),
+    db: Session = Depends(get_db), 
+    current_user: models.Operator = Depends(require_admin)
+):
+    query = db.query(models.Operator)
+    print("search", search or "None")
+    print("status_filter", status_filter or "None")
+    if search:
+        query = query.filter(
+            (models.Operator.name.ilike(f"%{search}%")) |
+            (models.Operator.email.ilike(f"%{search}%"))
+        )
+    
+    if status_filter:
+        query = query.filter(models.Operator.status == status_filter)
+    
+    operators = query.offset(skip).limit(limit).all()
+    return operators
+
+@router.get("/operators/{operator_id}", response_model=schemas.OperatorResponse)
+def get_operator_by_id(operator_id: int, db: Session = Depends(get_db), current_user: models.Operator = Depends(require_admin)):
+    operator = db.query(models.Operator).filter(models.Operator.id == operator_id).first()
+    if operator is None:
+        raise HTTPException(status_code=404, detail="Operator not found")
+    return operator
+
+@router.put("/operators/{operator_id}", response_model=schemas.OperatorResponse)
+def update_operator(operator_id: int, operator_update: schemas.OperatorUpdate, db: Session = Depends(get_db), current_user: models.Operator = Depends(require_admin)):
+    operator = db.query(models.Operator).filter(models.Operator.id == operator_id).first()
+    if operator is None:
+        raise HTTPException(status_code=404, detail="Operator not found")
+    
+    update_data = operator_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(operator, field, value)
+    
+    db.commit()
+    db.refresh(operator)
+    return operator
+
+@router.delete("/operators/{operator_id}")
+def delete_operator(operator_id: int, db: Session = Depends(get_db), current_user: models.Operator = Depends(require_admin)):
+    operator = db.query(models.Operator).filter(models.Operator.id == operator_id).first()
+    if operator is None:
+        raise HTTPException(status_code=404, detail="Operator not found")
+    
+    db.delete(operator)
+    db.commit()
+    return {"message": "Operator deleted successfully"}
+
+@router.get("/operators/me", response_model=schemas.OperatorResponse)
+def read_operators_me(current_user: models.Operator = Depends(get_current_user)):
+    return current_user
+
 # Logout endpoint
 @router.post("/logout", response_model=schemas.LogoutResponse)
 async def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    """
-    Logout user by blacklisting the current token
-    """
     try:
-        # Add token to blacklist
         success = add_token_to_blacklist(token, db)
         
         if success:
@@ -151,65 +232,6 @@ async def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_
             detail="Logout failed"
         )
 
-# Cleanup expired blacklisted tokens (optional endpoint for maintenance)
-@router.delete("/cleanup-tokens")
-async def cleanup_expired_tokens(db: Session = Depends(get_db), current_user: models.Operator = Depends(require_admin)):
-    """
-    Remove expired tokens from blacklist
-    """
-    try:
-        expired_tokens = db.query(models.TokenBlacklist).filter(
-            models.TokenBlacklist.expires_at < datetime.utcnow()
-        ).all()
-        
-        count = len(expired_tokens)
-        
-        for token in expired_tokens:
-            db.delete(token)
-        
-        db.commit()
-        
-        return {"message": f"Cleaned up {count} expired tokens"}
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Cleanup failed"
-        )
-
-# Rest of your existing endpoints...
-@router.post("/operators/", response_model=schemas.Operator)
-def create_operator(operator: schemas.OperatorCreate, db: Session = Depends(get_db)):
-    hashed_password = get_password_hash(operator.password)
-    db_operator = models.Operator(
-        name=operator.name,
-        fingerprint_id=operator.fingerprint_id,
-        role=operator.role,
-        email=operator.email,
-        phone=operator.phone,
-        password_hash=hashed_password
-    )
-    db.add(db_operator)
-    db.commit()
-    db.refresh(db_operator)
-    return db_operator
-
-@router.get("/operators/me", response_model=schemas.Operator)
-def read_operators_me(current_user: models.Operator = Depends(get_current_user)):
-    return current_user
-
-
-@router.get("/operators/", response_model=List[schemas.Operator])
-def get_all_operators(db: Session = Depends(get_db), current_user: models.Operator = Depends(require_admin)):
-    operators = db.query(models.Operator).all()
-    return operators
-
-@router.get("/operators/{fingerprint_id}", response_model=schemas.Operator)
-def get_operator(fingerprint_id: int, db: Session = Depends(get_db), current_user: models.Operator = Depends(get_current_user)):
-    operator = db.query(models.Operator).filter(models.Operator.fingerprint_id == fingerprint_id).first()
-    if operator is None:
-        raise HTTPException(status_code=404, detail="Operator not found")
-    return operator
-
 # Attendance endpoints (untuk ESP32)
 @router.post("/attendance/", response_model=schemas.AttendanceResponse)
 def record_attendance(fingerprint_data: dict, db: Session = Depends(get_db)):
@@ -218,11 +240,9 @@ def record_attendance(fingerprint_data: dict, db: Session = Depends(get_db)):
     if not fingerprint_id:
         raise HTTPException(status_code=400, detail="FingerID required")
     
-    # Cari operator berdasarkan fingerprint_id
     operator = db.query(models.Operator).filter(models.Operator.fingerprint_id == fingerprint_id).first()
     
     if not operator:
-        # Log attendance failed
         attendance_log = models.AttendanceLog(
             fingerprint_id=fingerprint_id,
             action="unknown",
@@ -232,7 +252,6 @@ def record_attendance(fingerprint_data: dict, db: Session = Depends(get_db)):
         db.commit()
         raise HTTPException(status_code=404, detail="Operator not found")
     
-    # Cek attendance terakhir untuk menentukan login/logout
     last_attendance = db.query(models.AttendanceLog).filter(
         models.AttendanceLog.operator_id == operator.id
     ).order_by(models.AttendanceLog.timestamp.desc()).first()
@@ -241,7 +260,6 @@ def record_attendance(fingerprint_data: dict, db: Session = Depends(get_db)):
     if last_attendance and last_attendance.action == "login":
         action = "logout"
     
-    # Simpan attendance log
     attendance_log = models.AttendanceLog(
         operator_id=operator.id,
         fingerprint_id=fingerprint_id,
@@ -286,10 +304,11 @@ def get_dashboard_stats(db: Session = Depends(get_db), current_user: models.Oper
     today_attendance = db.query(models.AttendanceLog).filter(
         models.AttendanceLog.timestamp >= datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     ).count()
+    pending_operators = db.query(models.Operator).filter(models.Operator.status == "Pending").count()
     
     return {
         "total_operators": total_operators,
         "active_operators": active_operators,
         "today_attendance": today_attendance,
-        "pending_operators": total_operators - active_operators
+        "pending_operators": pending_operators
     }

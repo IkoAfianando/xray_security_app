@@ -1,32 +1,178 @@
+"use client"
+
+import { useEffect, useState } from "react"
+import { useParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ArrowLeft, UserCog, Wallet, History, Shield, AlertTriangle } from "lucide-react"
+import { ArrowLeft, UserCog, History, Shield, AlertTriangle, Loader2 } from "lucide-react"
 import Link from "next/link"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { UserTransactions } from "@/components/user-transactions"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import Cookies from "js-cookie"
 
-export default function UserProfilePage({ params }: { params: { id: string } }) {
-  // In a real app, you would fetch the user data based on the ID
-  const user = users.find((u) => u.id === params.id) || users[0]
+interface Operator {
+  id: number
+  name: string
+  fingerprint_id: number
+  role: string
+  email?: string
+  phone?: string
+  status: string
+  created_at: string
+}
+
+export default function OperatorDetailPage() {
+  // Menggunakan useParams hook untuk mendapatkan dynamic route parameters
+  const params = useParams<{ id: string }>()
+  const operatorId = params?.id
+
+  const [operator, setOperator] = useState<Operator | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [updating, setUpdating] = useState(false)
+  const [error, setError] = useState("")
+  const [success, setSuccess] = useState("")
+
+  useEffect(() => {
+    if (operatorId) {
+      fetchOperator()
+    }
+  }, [operatorId])
+
+  const fetchOperator = async () => {
+    if (!operatorId) return
+
+    try {
+      const token = Cookies.get('access_token')
+      const response = await fetch(`http://localhost:8000/operators/${operatorId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setOperator(data)
+      } else {
+        setError('Failed to fetch operator details')
+      }
+    } catch (error) {
+      setError('Error fetching operator details')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleUpdate = async (updateData: Partial<Operator>) => {
+    if (!operatorId) return
+
+    setUpdating(true)
+    setError("")
+    setSuccess("")
+
+    try {
+      const token = Cookies.get('access_token')
+      const response = await fetch(`http://localhost:8000/operators/${operatorId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(updateData)
+      })
+
+      if (response.ok) {
+        const updatedOperator = await response.json()
+        setOperator(updatedOperator)
+        setSuccess('Operator updated successfully')
+        
+        // Clear success message after 3 seconds
+        setTimeout(() => setSuccess(""), 3000)
+      } else {
+        const errorData = await response.json()
+        setError(errorData.detail || 'Failed to update operator')
+      }
+    } catch (error) {
+      setError('Network error. Please try again.')
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!operatorId) return
+    if (!confirm('Are you sure you want to delete this operator?')) return
+
+    try {
+      const token = Cookies.get('access_token')
+      const response = await fetch(`http://localhost:8000/operators/${operatorId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (response.ok) {
+        // Redirect to users list
+        window.location.href = '/users'
+      } else {
+        setError('Failed to delete operator')
+      }
+    } catch (error) {
+      setError('Error deleting operator')
+    }
+  }
+
+  // Loading state
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    )
+  }
+
+  // Error state - operator not found
+  if (!operator) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64">
+        <p className="text-muted-foreground">Operator not found</p>
+        <Button asChild className="mt-4">
+          <Link href="/operators">Back to Operators</Link>
+        </Button>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="icon" asChild>
-          <Link href="/users">
+          <Link href="/operators">
             <ArrowLeft className="h-4 w-4" />
           </Link>
         </Button>
         <div>
           <h1 className="text-3xl font-bold tracking-tight">
-            {user.name} {user.surname}
+            {operator.name}
           </h1>
-          <p className="text-muted-foreground">User profile and account management</p>
+          <p className="text-muted-foreground">Operator profile and account management</p>
         </div>
       </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {success && (
+        <Alert>
+          <AlertDescription>{success}</AlertDescription>
+        </Alert>
+      )}
 
       <Tabs defaultValue="profile" className="space-y-4">
         <TabsList>
@@ -34,13 +180,9 @@ export default function UserProfilePage({ params }: { params: { id: string } }) 
             <UserCog className="h-4 w-4 mr-2" />
             Profile
           </TabsTrigger>
-          <TabsTrigger value="wallet">
-            <Wallet className="h-4 w-4 mr-2" />
-            Wallet
-          </TabsTrigger>
-          <TabsTrigger value="transactions">
+          <TabsTrigger value="attendance">
             <History className="h-4 w-4 mr-2" />
-            Transactions
+            Attendance
           </TabsTrigger>
           <TabsTrigger value="security">
             <Shield className="h-4 w-4 mr-2" />
@@ -52,48 +194,88 @@ export default function UserProfilePage({ params }: { params: { id: string } }) 
           <Card>
             <CardHeader>
               <CardTitle>Profile Information</CardTitle>
-              <CardDescription>View and update user profile details</CardDescription>
+              <CardDescription>View and update operator profile details</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="firstName">First Name</Label>
-                  <Input id="firstName" defaultValue={user.name} />
+                  <Label htmlFor="name">Full Name</Label>
+                  <Input 
+                    id="name" 
+                    defaultValue={operator.name}
+                    onBlur={(e) => {
+                      if (e.target.value !== operator.name) {
+                        handleUpdate({ name: e.target.value })
+                      }
+                    }}
+                    disabled={updating}
+                  />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="surname">Surname</Label>
-                  <Input id="surname" defaultValue={user.surname} />
+                  <Label htmlFor="fingerprint_id">Fingerprint ID</Label>
+                  <Input 
+                    id="fingerprint_id" 
+                    value={operator.fingerprint_id} 
+                    disabled
+                    className="bg-muted"
+                  />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="email">Email</Label>
-                  <Input id="email" type="email" defaultValue={user.email} />
+                  <Input 
+                    id="email" 
+                    type="email" 
+                    defaultValue={operator.email || ""}
+                    onBlur={(e) => {
+                      if (e.target.value !== operator.email) {
+                        handleUpdate({ email: e.target.value || null })
+                      }
+                    }}
+                    disabled={updating}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="phone">Phone Number</Label>
-                  <Input id="phone" defaultValue={user.phone} />
+                  <Input 
+                    id="phone" 
+                    defaultValue={operator.phone || ""}
+                    onBlur={(e) => {
+                      if (e.target.value !== operator.phone) {
+                        handleUpdate({ phone: e.target.value || null })
+                      }
+                    }}
+                    disabled={updating}
+                  />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="idType">ID Type</Label>
-                  <Select defaultValue={user.idType}>
-                    <SelectTrigger id="idType">
-                      <SelectValue placeholder="Select ID type" />
+                  <Label htmlFor="role">Role</Label>
+                  <Select 
+                    defaultValue={operator.role}
+                    onValueChange={(value) => handleUpdate({ role: value })}
+                    disabled={updating}
+                  >
+                    <SelectTrigger id="role">
+                      <SelectValue placeholder="Select role" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="ID">ID</SelectItem>
-                      <SelectItem value="Passport">Passport</SelectItem>
-                      <SelectItem value="Asylum Seeker">Asylum Seeker</SelectItem>
+                      <SelectItem value="operator">Operator</SelectItem>
+                      <SelectItem value="admin">Admin</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="status">Account Status</Label>
-                  <Select defaultValue={user.status}>
+                  <Select 
+                    defaultValue={operator.status}
+                    onValueChange={(value) => handleUpdate({ status: value })}
+                    disabled={updating}
+                  >
                     <SelectTrigger id="status">
                       <SelectValue placeholder="Select status" />
                     </SelectTrigger>
@@ -107,67 +289,30 @@ export default function UserProfilePage({ params }: { params: { id: string } }) 
               </div>
             </CardContent>
             <CardFooter className="flex justify-between">
-              <Button variant="outline">Reset</Button>
-              <Button>Save Changes</Button>
-            </CardFooter>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="wallet">
-          <Card>
-            <CardHeader>
-              <CardTitle>Wallet Information</CardTitle>
-              <CardDescription>Manage user wallet and balance</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium">Current Balance</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold">R {user.balance.toFixed(2)}</div>
-                    <p className="text-xs text-muted-foreground">Last updated: Today at 12:34 PM</p>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium">Wallet Status</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold">{user.walletStatus}</div>
-                    <p className="text-xs text-muted-foreground">Created: {user.walletCreated}</p>
-                  </CardContent>
-                </Card>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="topup">Top Up Wallet</Label>
-                <div className="flex gap-2">
-                  <Input id="topup" type="number" placeholder="Amount in ZAR" />
-                  <Button>Add Funds</Button>
-                </div>
-              </div>
-            </CardContent>
-            <CardFooter className="flex justify-between">
-              <Button variant="outline" className="gap-2">
+              <Button 
+                variant="destructive" 
+                onClick={handleDelete}
+                className="gap-2"
+                disabled={updating}
+              >
                 <AlertTriangle className="h-4 w-4" />
-                Freeze Wallet
+                Delete Operator
               </Button>
-              <Button>Save Changes</Button>
+              <div className="text-sm text-muted-foreground">
+                Created: {new Date(operator.created_at).toLocaleDateString()}
+              </div>
             </CardFooter>
           </Card>
         </TabsContent>
 
-        <TabsContent value="transactions">
+        <TabsContent value="attendance">
           <Card>
             <CardHeader>
-              <CardTitle>Transaction History</CardTitle>
-              <CardDescription>View all transactions for this user</CardDescription>
+              <CardTitle>Attendance History</CardTitle>
+              <CardDescription>View attendance logs for this operator</CardDescription>
             </CardHeader>
             <CardContent>
-              <UserTransactions userId={params.id} />
+              <p className="text-muted-foreground">Attendance logs will be displayed here</p>
             </CardContent>
           </Card>
         </TabsContent>
@@ -176,32 +321,19 @@ export default function UserProfilePage({ params }: { params: { id: string } }) 
           <Card>
             <CardHeader>
               <CardTitle>Security Settings</CardTitle>
-              <CardDescription>Manage user security and access</CardDescription>
+              <CardDescription>Manage operator security and access</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="resetPassword">Reset Password</Label>
+                <Label>Reset Password</Label>
                 <div className="flex gap-2">
-                  <Button variant="outline" className="w-full">
-                    Send Reset Link
-                  </Button>
-                  <Button className="w-full">Generate Temporary Password</Button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Two-Factor Authentication</Label>
-                <div className="flex items-center justify-between rounded-lg border p-4">
-                  <div className="space-y-0.5">
-                    <div className="font-medium">2FA Status</div>
-                    <div className="text-sm text-muted-foreground">
-                      {user.twoFactorEnabled ? "Enabled" : "Disabled"}
-                    </div>
-                  </div>
-                  <Button variant={user.twoFactorEnabled ? "destructive" : "outline"}>
-                    {user.twoFactorEnabled ? "Disable" : "Enable"}
+                  <Button variant="outline" className="w-full" disabled={updating}>
+                    Generate New Password
                   </Button>
                 </div>
+                <p className="text-sm text-muted-foreground">
+                  This will generate a new temporary password for the operator
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -210,71 +342,3 @@ export default function UserProfilePage({ params }: { params: { id: string } }) 
     </div>
   )
 }
-
-const users = [
-  {
-    id: "1",
-    name: "Thabo",
-    surname: "Mbeki",
-    email: "thabo.mbeki@example.com",
-    idType: "ID",
-    phone: "+27 71 234 5678",
-    status: "Active",
-    balance: 1250.75,
-    walletStatus: "Active",
-    walletCreated: "2023-05-12",
-    twoFactorEnabled: false,
-  },
-  {
-    id: "2",
-    name: "Nomzamo",
-    surname: "Mbatha",
-    email: "nomzamo.mbatha@example.com",
-    idType: "Passport",
-    phone: "+27 82 345 6789",
-    status: "Active",
-    balance: 3450.5,
-    walletStatus: "Active",
-    walletCreated: "2023-06-18",
-    twoFactorEnabled: true,
-  },
-  {
-    id: "3",
-    name: "Siya",
-    surname: "Kolisi",
-    email: "siya.kolisi@example.com",
-    idType: "ID",
-    phone: "+27 63 456 7890",
-    status: "Active",
-    balance: 5678.25,
-    walletStatus: "Active",
-    walletCreated: "2023-04-30",
-    twoFactorEnabled: false,
-  },
-  {
-    id: "4",
-    name: "Bonang",
-    surname: "Matheba",
-    email: "bonang.matheba@example.com",
-    idType: "ID",
-    phone: "+27 74 567 8901",
-    status: "Pending",
-    balance: 0.0,
-    walletStatus: "Pending",
-    walletCreated: "2023-08-05",
-    twoFactorEnabled: false,
-  },
-  {
-    id: "5",
-    name: "Trevor",
-    surname: "Noah",
-    email: "trevor.noah@example.com",
-    idType: "Passport",
-    phone: "+27 85 678 9012",
-    status: "Active",
-    balance: 12500.0,
-    walletStatus: "Active",
-    walletCreated: "2023-02-14",
-    twoFactorEnabled: true,
-  },
-]
