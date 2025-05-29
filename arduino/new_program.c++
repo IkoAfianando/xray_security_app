@@ -12,8 +12,8 @@ const char* password = "YOUR_WIFI_PASSWORD"; // <<<<<<<<<<< REPLACE WITH YOUR WI
 // on the local network (e.g., "192.168.1.100").
 const char* serverHost = "127.0.0.1"; // <<<<<<<<<<< REPLACE WITH YOUR PC's ACTUAL LAN IP ADDRESS
 const int serverPort = 8000;
-const char* serverLoginPath = "/api/fingerprint_login";  // API endpoint for login
-const char* serverEnrollPath = "/api/fingerprint_enroll"; // API endpoint for enrollment
+const char* serverLoginPath = "/fingerprint_login";  // API endpoint for login
+const char* serverEnrollPath = "/fingerprint_enroll"; // API endpoint for enrollment
 
 // Inisialisasi UART fingerprint
 HardwareSerial mySerial(2); // Serial2 uses GPIO16 (RX2) and GPIO17 (TX2) by default.
