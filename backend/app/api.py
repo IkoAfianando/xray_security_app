@@ -312,3 +312,33 @@ def get_dashboard_stats(db: Session = Depends(get_db), current_user: models.Oper
         "today_attendance": today_attendance,
         "pending_operators": pending_operators
     }
+
+
+@router.post('/fingerprint_login')
+def fingerprint_login(fingerprint_id_real: str, db: Session = Depends(get_db)):
+    operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
+    if not operator:
+        operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
+        if not operator:
+            raise HTTPException(status_code=404, detail="Operator not found")
+        else:
+            operator.fingerprint_id_real = fingerprint_id_real
+            db.commit()
+            db.refresh(operator)
+            return operator
+    else:
+        operator.fingerprint_id_real = fingerprint_id_real
+        db.commit()
+        db.refresh(operator)
+    return operator
+
+@router.post('/fingerprint_enroll')
+def fingerprint_enroll(fingerprint_id_real: str, db: Session = Depends(get_db)):
+    operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
+    if not operator:
+        raise HTTPException(status_code=404, detail="Operator not found")
+    else:        
+        operator.fingerprint_id_real = fingerprint_id_real
+        db.commit()
+        db.refresh(operator)
+    return operator

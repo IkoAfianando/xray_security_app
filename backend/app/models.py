@@ -11,6 +11,7 @@ class Operator(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     fingerprint_id = Column(Integer, unique=True)
+    fingerprint_id_real = Column(String, nullable=True)
     role = Column(String, default="operator")  # roles: operator, admin
     password_hash = Column(String, nullable=True)
     email = Column(String, unique=True, nullable=True)
