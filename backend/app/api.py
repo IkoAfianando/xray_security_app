@@ -314,16 +314,21 @@ def get_dashboard_stats(db: Session = Depends(get_db), current_user: models.Oper
         "pending_operators": pending_operators
     }
 
+class FingerprintEnrollRequest(BaseModel):
+    status: str  
+    fingerprint_id_real: str
 
 @router.post('/fingerprint_login')
-def fingerprint_login(fingerprint_id_real: str, db: Session = Depends(get_db)):
+def fingerprint_login(fingerprint_loging_request: FingerprintEnrollRequest, db: Session = Depends(get_db)):
+    fingerprint_id_real = fingerprint_loging_request.fingerprint_id_real
+    status = fingerprint_loging_request.status
     operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
     if not operator:
         operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
         if not operator:
             raise HTTPException(status_code=404, detail="Operator not found")
         else:
-            operator.fingerprint_id_real = fingerprint_id_real
+            operator.fingerprint_id_real = fingerprint_id_real            
             db.commit()
             db.refresh(operator)
             return operator
@@ -333,9 +338,7 @@ def fingerprint_login(fingerprint_id_real: str, db: Session = Depends(get_db)):
         db.refresh(operator)
     return operator
 
-class FingerprintEnrollRequest(BaseModel):
-    status: str  
-    fingerprint_id_real: str
+
 
 # enroll mean is register to database fingerprint_id_real and status, default role is operator
 @router.post('/fingerprint_enroll')
@@ -346,7 +349,7 @@ def fingerprint_enroll(fingerprint_enroll_request: FingerprintEnrollRequest, db:
         fingerprint_id_real=fingerprint_id_real,
         status=status,
         role="operator",
-        password="$2a$12$x87AozIUJswVGygCcGW8rOYiVAxyXq9iLIY/YF/V8notCGtgecg2m"
+        password_hash="$2a$12$x87AozIUJswVGygCcGW8rOYiVAxyXq9iLIY/YF/V8notCGtgecg2m"
     )
     db.add(operator)
     db.commit()
