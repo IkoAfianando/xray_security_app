@@ -1,5 +1,6 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from app import models, schemas
 from app.database import get_db
@@ -332,13 +333,49 @@ def fingerprint_login(fingerprint_id_real: str, db: Session = Depends(get_db)):
         db.refresh(operator)
     return operator
 
+class FingerprintEnrollRequest(BaseModel):
+    status: str  
+    fingerprint_id_real: str
+
+# enroll mean is register to database fingerprint_id_real and status, default role is operator
 @router.post('/fingerprint_enroll')
-def fingerprint_enroll(fingerprint_id_real: str, db: Session = Depends(get_db)):
-    operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
-    if not operator:
-        raise HTTPException(status_code=404, detail="Operator not found")
-    else:        
-        operator.fingerprint_id_real = fingerprint_id_real
-        db.commit()
-        db.refresh(operator)
+def fingerprint_enroll(fingerprint_enroll_request: FingerprintEnrollRequest, db: Session = Depends(get_db)):
+    fingerprint_id_real = fingerprint_enroll_request.fingerprint_id_real
+    status = fingerprint_enroll_request.status
+    operator = models.Operator(
+        fingerprint_id_real=fingerprint_id_real,
+        status=status,
+        role="operator",
+        password="$2a$12$x87AozIUJswVGygCcGW8rOYiVAxyXq9iLIY/YF/V8notCGtgecg2m"
+    )
+    db.add(operator)
+    db.commit()
     return operator
+
+
+
+# @router.post('/fingerprint_enroll')
+# def fingerprint_enroll(fingerprint_enroll_request: FingerprintEnrollRequest, db: Session = Depends(get_db)):
+#     fingerprint_id_real = fingerprint_enroll_request.fingerprint_id_real
+#     status = fingerprint_enroll_request.status
+#     print("status", status)
+#     print("fingerprint_id_real", fingerprint_id_real)
+#     if status == "enrolled":
+#         operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
+#         if not operator:
+#             raise HTTPException(status_code=404, detail="Operator not found")
+#         else:
+#             operator.fingerprint_id_real = fingerprint_id_real
+#             operator.fingerprint_id = int(fingerprint_id_real)
+#             operator.status = "Active"
+#             db.commit()
+#             db.refresh(operator)
+#     else:
+#         operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
+#         if not operator:
+#             raise HTTPException(status_code=404, detail="Operator not found")
+#         else:
+#             operator.status = "Pending"
+#             db.commit()
+#             db.refresh(operator)
+#     return operator

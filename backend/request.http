@@ -1,0 +1,8 @@
+###
+POST http://localhost:8000/fingerprint_enroll
+Content-Type: application/json
+
+{
+    "fingerprint_id_real": "1234567890",
+    "status": "enrolled"
+}
