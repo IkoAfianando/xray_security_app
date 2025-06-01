@@ -318,10 +318,15 @@ class FingerprintEnrollRequest(BaseModel):
     status: str  
     fingerprint_id_real: str
 
+class FingerprintLoginRequest(BaseModel):    
+    confidence: int
+    fingerprint_id_real: str
+
+
 @router.post('/fingerprint_login')
-def fingerprint_login(fingerprint_loging_request: FingerprintEnrollRequest, db: Session = Depends(get_db)):
-    fingerprint_id_real = fingerprint_loging_request.fingerprint_id_real
-    status = fingerprint_loging_request.status
+def fingerprint_login(fingerprint_loging_request: FingerprintLoginRequest, db: Session = Depends(get_db)):
+    fingerprint_id_real = fingerprint_loging_request.fingerprint_id_real    
+    confidence = fingerprint_loging_request.confidence
     operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
     if not operator:
         operator = db.query(models.Operator).filter(models.Operator.fingerprint_id_real == fingerprint_id_real).first()
@@ -346,6 +351,7 @@ def fingerprint_enroll(fingerprint_enroll_request: FingerprintEnrollRequest, db:
     fingerprint_id_real = fingerprint_enroll_request.fingerprint_id_real
     status = fingerprint_enroll_request.status
     operator = models.Operator(
+        fingerprint_id=int(fingerprint_id_real),
         fingerprint_id_real=fingerprint_id_real,
         status=status,
         role="operator",
