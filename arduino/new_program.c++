@@ -3,29 +3,40 @@
 #include <HTTPClient.h>  // For ESP32 HTTP requests
 
 // --- Wi-Fi Configuration ---
-const char* ssid = "YOUR_WIFI_SSID";         // <<<<<<<<<<< REPLACE WITH YOUR WI-FI SSID
-const char* password = "YOUR_WIFI_PASSWORD"; // <<<<<<<<<<< REPLACE WITH YOUR WI-FI PASSWORD
+const char* ssid = "IKO-WIFI";
+const char* password = "12341234";
 
 // --- Server Configuration ---
-// CRITICAL NOTE: "127.0.0.1" (localhost) WILL NOT WORK from the ESP32 to reach your PC.
-// You MUST replace "127.0.0.1" with the actual IP address of your PC 
-// on the local network (e.g., "192.168.1.100").
-const char* serverHost = "127.0.0.1"; // <<<<<<<<<<< REPLACE WITH YOUR PC's ACTUAL LAN IP ADDRESS
+const char* serverHost = "192.168.1.12";
 const int serverPort = 8000;
-const char* serverLoginPath = "/fingerprint_login";  // API endpoint for login
-const char* serverEnrollPath = "/fingerprint_enroll"; // API endpoint for enrollment
+const char* serverLoginPath = "/fingerprint_login";
+const char* serverEnrollPath = "/fingerprint_enroll";
 
-// Inisialisasi UART fingerprint
-HardwareSerial mySerial(2); // Serial2 uses GPIO16 (RX2) and GPIO17 (TX2) by default.
+// --- Hardware Pins & Settings ---
+HardwareSerial mySerial(2); // RX = 16, TX = 17 for Serial2
 Adafruit_Fingerprint finger(&mySerial);
 
-// LED login di pin 4
-const int loginLed = 4; // Make sure this pin is available and correct for your ESP32 board
+const int feedbackLedPin = 4; // LED for Wi-Fi status, HTTP errors etc.
+const int MAX_FINGERPRINTS = 127;
+const int RELAY_PIN = 5;  // Pin relay
 
-// Maximum number of fingerprints the sensor can store (consult your sensor's datasheet)
-const int MAX_FINGERPRINTS = 127; 
+// --- Custom Error Codes (Optional) ---
+#define FINGERPRINT_TIMEOUT 0xFE // Example custom error code for timeout
+
+// --- Function Prototypes (optional, but good for organization) ---
+void setupWifi();
+void relayOn();
+void relayOff();
+int findNextAvailableID();
+void enrollFingerprintAndNotify(int id);
+void enrollFingerprint_original(int id);
+void loginFingerprint();
+void blinkLed(int pin, int times, int onDuration, int offDuration = -1);
+uint8_t getFingerprintEnroll(int id); // Removed 'pass' parameter, not used
+uint8_t getFingerprintImageAndConvertToTemplate(uint8_t templateSlot);
 
 
+// --- Wi-Fi Setup ---
 void setupWifi() {
   Serial.println();
   Serial.print("Connecting to ");
@@ -38,363 +49,395 @@ void setupWifi() {
     delay(500);
     Serial.print(".");
     retries++;
-    if (retries > 20) { // Timeout after 10 seconds
-        Serial.println("\nFailed to connect to WiFi. Please check credentials or network.");
-        // You might want to implement a different behavior here, e.g. retry later or enter a config mode
-        return; 
+    if (retries > 20) {
+      Serial.println("\nFailed to connect to WiFi. Please check credentials or network.");
+      blinkLed(feedbackLedPin, 5, 200, 200); // Blink 5 times for Wi-Fi failure
+      return;
     }
   }
 
-  Serial.println("");
-  Serial.println("WiFi connected");
+  Serial.println("\nWiFi connected");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 }
 
-void setup() {
-  Serial.begin(115200);
-  while (!Serial); // Wait for serial port to connect (needed for native USB)
-  delay(1000);
-
-  // Setup LED output
-  pinMode(loginLed, OUTPUT);
-  digitalWrite(loginLed, LOW); // Matikan LED saat awal
-
-  // Setup Wi-Fi
-  setupWifi(); // Ensure Wi-Fi is set up
-
-  // Serial untuk sensor: RX=16, TX=17
-  mySerial.begin(57600, SERIAL_8N1, 16, 17); // Adjust pins if necessary for your board
-  finger.begin(57600);
-
-  Serial.println("\nInisialisasi sensor sidik jari...");
-
-  if (finger.verifyPassword()) {
-    Serial.println("Sensor fingerprint terdeteksi!");
-  } else {
-    Serial.println("Sensor fingerprint tidak ditemukan. Periksa koneksi!");
-    while (1) { delay(1); } // Halt
+// --- LED Blinking Utility ---
+void blinkLed(int pin, int times, int onDuration, int offDuration) {
+  if (offDuration == -1) offDuration = onDuration;
+  for (int i = 0; i < times; i++) {
+    digitalWrite(pin, HIGH);
+    delay(onDuration);
+    digitalWrite(pin, LOW);
+    delay(offDuration);
   }
-  // Get sensor capacity after verification
-  // finger.getTemplateCount(); // Prime templateCount, good practice though findNextAvailableID will do it.
-  // Serial.print("Kapasitas sensor: "); Serial.println(finger.capacity);
-
-
-  Serial.println("Ketik perintah:");
-  Serial.println("  'a' untuk daftar otomatis (auto enroll & notify)");
-  Serial.println("  'd' untuk daftar manual (enroll by ID, no notify yet)");
-  Serial.println("  'l' untuk login (verifikasi & notify)");
 }
 
+// --- Relay Control ---
+void relayOn() {
+  digitalWrite(RELAY_PIN, LOW);  // Relay ON (assuming active LOW)
+  Serial.println("Relay ON");
+}
+
+void relayOff() {
+  digitalWrite(RELAY_PIN, HIGH); // Relay OFF
+  Serial.println("Relay OFF");
+}
+
+// --- Main Setup ---
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) {
+    delay(10); // Wait for serial port to connect. Needed for native USB port only
+  }
+  delay(1000); // Allow Serial to stabilize
+
+  pinMode(feedbackLedPin, OUTPUT);
+  digitalWrite(feedbackLedPin, LOW);
+
+  pinMode(RELAY_PIN, OUTPUT);
+  relayOff(); // Ensure relay is off initially
+
+  setupWifi(); // Connect to Wi-Fi
+
+  // Initialize fingerprint sensor
+  mySerial.begin(57600, SERIAL_8N1, 16, 17); // Pins for Serial2: RX=16, TX=17
+  finger.begin(57600);
+
+  Serial.println("\nInitializing fingerprint sensor...");
+  if (finger.verifyPassword()) {
+    Serial.println("Fingerprint sensor detected!");
+    finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); // Indicate sensor ready
+    delay(500);
+    finger.LEDcontrol(FINGERPRINT_LED_OFF);
+  } else {
+    Serial.println("Fingerprint sensor not found. Please check wiring.");
+    blinkLed(feedbackLedPin, 10, 100, 100); // Fast blink for critical sensor error
+    while (1) { delay(1); } // Halt execution
+  }
+
+  Serial.println("\nReady for commands:");
+  Serial.println("  'a' - Auto enroll & notify server");
+  Serial.println("  'd' - Manual enroll by ID (no server notify)");
+  Serial.println("  'l' - Login & notify server");
+}
+
+// --- Main Loop ---
 void loop() {
   if (Serial.available()) {
-    char cmd = Serial.read();
-    // Consume any extra characters like newline
-    while(Serial.available()) Serial.read();
+    char cmd = tolower(Serial.read()); // Read command, convert to lowercase
+    while (Serial.available()) { Serial.read(); } // Clear any remaining characters in buffer
 
     if (cmd == 'a') {
-      Serial.println("Memulai pendaftaran otomatis...");
+      Serial.println("Starting automatic enrollment...");
       int newId = findNextAvailableID();
-      if (newId == 0) { // 0 indicates error or full
-        Serial.println("Tidak dapat mendaftar: Tidak ada ID tersedia atau database penuh.");
+      if (newId == 0) {
+        Serial.println("Enrollment failed: No available ID or database is full.");
+        blinkLed(feedbackLedPin, 3, 300, 150); // Indicate failure
       } else {
         enrollFingerprintAndNotify(newId);
       }
     } else if (cmd == 'd') {
-      Serial.println("Masukkan ID (1~" + String(MAX_FINGERPRINTS) + ") untuk disimpan (pendaftaran manual):");
-      while (!Serial.available()); // Wait for user input
+      Serial.println("Enter ID (1-" + String(MAX_FINGERPRINTS) + ") for manual enrollment:");
+      while (!Serial.available()) { delay(10); } // Wait for user input
       String idStr = Serial.readStringUntil('\n');
       idStr.trim();
       int id = idStr.toInt();
 
       if (id < 1 || id > MAX_FINGERPRINTS) {
-        Serial.println("ID tidak valid.");
+        Serial.println("Invalid ID.");
+        blinkLed(feedbackLedPin, 2, 200, 100); // Indicate invalid input
         return;
       }
-      // Note: This manual enrollFingerprint_original does not yet call the HTTP POST.
-      // You could modify it or call enrollFingerprintAndNotify(id) if you want it to notify.
-      enrollFingerprint_original(id); 
+      enrollFingerprint_original(id);
     } else if (cmd == 'l') {
       loginFingerprint();
     } else {
-      Serial.print("Perintah tidak dikenal: ");
+      Serial.print("Unknown command: ");
       Serial.println(cmd);
     }
   }
 }
 
+// --- Find Next Available Fingerprint ID ---
 int findNextAvailableID() {
-  Serial.println("Mencari ID yang tersedia...");
+  Serial.println("Searching for an available ID...");
   uint8_t p = finger.getTemplateCount(); // This updates finger.templateCount
 
   if (p != FINGERPRINT_OK) {
-    Serial.print("Gagal mendapatkan jumlah template. Kode error: 0x"); 
-    // The actual error code for getTemplateCount might be in finger.lastPacket->data[0]
-    // or it might be the return value 'p' itself if it's a direct error code.
-    // For simplicity, we check 'p'. Consult library for specific error details if needed.
-    Serial.println(p, HEX); 
-    return 0; // Error
+    Serial.print("Failed to get template count. Error code: 0x");
+    Serial.println(p, HEX);
+    return 0; // Indicate error
   }
-  
+
   int current_template_count = finger.templateCount;
-  Serial.print("Jumlah template tersimpan saat ini: "); Serial.println(current_template_count);
+  Serial.print("Current number of stored templates: "); Serial.println(current_template_count);
 
   if (current_template_count >= MAX_FINGERPRINTS) {
-    Serial.println("Database sidik jari penuh.");
-    return 0; // Database full
+    Serial.println("Fingerprint database is full.");
+    return 0; // Indicate full
   }
-  
-  // Next ID is count + 1 (IDs are typically 1-indexed)
+
+  // This simple method finds the next sequential ID.
+  // For finding gaps, a more complex check would be needed (e.g., trying to load each ID).
   int next_id = current_template_count + 1;
-  Serial.print("ID berikutnya yang akan digunakan untuk pendaftaran: "); Serial.println(next_id);
+  Serial.print("Next available ID for enrollment: "); Serial.println(next_id);
   return next_id;
 }
 
 
-// Fungsi daftar sidik jari (versi original tanpa notifikasi HTTP)
-// Kept for users who might want manual enrollment without notification, or for reference
-void enrollFingerprint_original(int id) {
-  int p = -1;
-  Serial.print("Mendaftarkan ID #"); Serial.println(id);
-  Serial.println("Letakkan jari pertama...");
-  finger.LEDcontrol(FINGERPRINT_LED_ON, 255, FINGERPRINT_LED_BLUE); 
+// --- Helper: Get Fingerprint Image and Convert to Template ---
+uint8_t getFingerprintImageAndConvertToTemplate(uint8_t templateSlot) {
+  uint8_t p = FINGERPRINT_NOFINGER; // Initialize p to ensure loop starts
+  unsigned long startTime = millis();
+  Serial.print("Place finger on sensor for image "); Serial.println(templateSlot);
+  finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); // Blue light for scanning
 
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
+    if (millis() - startTime > 10000) { // 10-second timeout
+      Serial.println("Timeout: No fingerprint detected.");
+      finger.LEDcontrol(FINGERPRINT_LED_OFF);
+      return FINGERPRINT_TIMEOUT; 
+    }
     switch (p) {
-      case FINGERPRINT_OK: Serial.println("Gambar diambil"); break;
-      case FINGERPRINT_NOFINGER: delay(50); break;
-      case FINGERPRINT_PACKETRECIEVEERR: Serial.println("Kesalahan komunikasi"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-      case FINGERPRINT_IMAGEFAIL: Serial.println("Gagal mengambil gambar"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-      default: Serial.println("Kesalahan tidak diketahui saat getImage"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
+      case FINGERPRINT_OK:
+        Serial.println("Image taken.");
+        break;
+      case FINGERPRINT_NOFINGER:
+        delay(50); // Keep trying
+        break;
+      case FINGERPRINT_PACKETRECIEVEERR:
+        Serial.println("Communication error.");
+        finger.LEDcontrol(FINGERPRINT_LED_OFF);
+        return p;
+      case FINGERPRINT_IMAGEFAIL:
+        Serial.println("Imaging error.");
+        finger.LEDcontrol(FINGERPRINT_LED_OFF);
+        return p;
+      default:
+        // Don't print error here if it's still trying (e.g. FINGERPRINT_NOFINGER)
+        // Only print if it's an unexpected error code that isn't FINGERPRINT_OK or FINGERPRINT_NOFINGER
+        if (p != FINGERPRINT_NOFINGER) {
+            Serial.print("Unknown error during getImage: 0x"); Serial.println(p, HEX);
+            finger.LEDcontrol(FINGERPRINT_LED_OFF);
+            return p;
+        }
+        break; // Continue loop if FINGERPRINT_NOFINGER
     }
   }
+  // finger.LEDcontrol(FINGERPRINT_LED_OFF); // Turn off LED after image capture - moved to after image2Tz
 
-  p = finger.image2Tz(1);
+  // Convert image to template
+  p = finger.image2Tz(templateSlot);
   switch (p) {
-    case FINGERPRINT_OK: Serial.println("Gambar diubah ke template 1"); break;
-    case FINGERPRINT_IMAGEMESS: Serial.println("Gambar terlalu berantakan"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-    // ... (add other specific error cases from Adafruit_Fingerprint.h for image2Tz if desired)
-    default: Serial.print("Gagal mengubah gambar ke template 1. Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
+    case FINGERPRINT_OK:
+      Serial.print("Image converted to template slot "); Serial.println(templateSlot);
+      break;
+    case FINGERPRINT_IMAGEMESS:
+      Serial.println("Image too messy."); finger.LEDcontrol(FINGERPRINT_LED_OFF); return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error during image2Tz."); finger.LEDcontrol(FINGERPRINT_LED_OFF); return p;
+    case FINGERPRINT_FEATUREFAIL:
+      Serial.println("Could not find fingerprint features."); finger.LEDcontrol(FINGERPRINT_LED_OFF); return p;
+    case FINGERPRINT_INVALIDIMAGE:
+      Serial.println("Invalid image."); finger.LEDcontrol(FINGERPRINT_LED_OFF); return p;
+    default:
+      Serial.print("Unknown error during image2Tz: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return p;
   }
-
-  Serial.println("Angkat jari...");
-  finger.LEDcontrol(FINGERPRINT_LED_FLASHING, 10, FINGERPRINT_LED_PURPLE, 250);
-  delay(1000); 
-  p = FINGERPRINT_OK; // Assume finger is there initially
-  while (p != FINGERPRINT_NOFINGER) { // Wait until finger is removed
-    p = finger.getImage();
-    delay(50); 
-  }
-  Serial.println("Jari diangkat.");
-
-
-  Serial.println("Letakkan jari yang sama lagi...");
-  finger.LEDcontrol(FINGERPRINT_LED_ON, 255, FINGERPRINT_LED_BLUE);
-  p = -1;
-  while (p != FINGERPRINT_OK) {
-    p = finger.getImage();
-    switch (p) {
-      case FINGERPRINT_OK: Serial.println("Gambar kedua diambil"); break;
-      case FINGERPRINT_NOFINGER: delay(50); break;
-      // ... (similar error handling as first getImage)
-      default: Serial.print("Gagal mengambil gambar kedua. Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-    }
-  }
-
-  p = finger.image2Tz(2);
-  switch (p) {
-    case FINGERPRINT_OK: Serial.println("Gambar kedua diubah ke template 2"); break;
-    // ... (similar error handling as first image2Tz)
-    default: Serial.print("Gagal mengubah gambar ke template 2. Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-  }
-
-  Serial.print("Membuat model untuk ID #"); Serial.println(id);
-  p = finger.createModel();
-  if (p == FINGERPRINT_OK) {
-    Serial.println("Sidik jari cocok! Model dibuat.");
-  } else if (p == FINGERPRINT_ENROLLMISMATCH) {
-    Serial.println("Sidik jari tidak cocok. Ulangi."); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-  } else {
-    Serial.print("Gagal membuat model. Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-  }
-
-  Serial.print("Menyimpan model ID #"); Serial.println(id);
-  p = finger.storeModel(id);
-  if (p == FINGERPRINT_OK) {
-    Serial.println("Pendaftaran berhasil (manual)!");
-    finger.LEDcontrol(FINGERPRINT_LED_SOLID, 10, FINGERPRINT_LED_GREEN, 1000);
-  } else {
-    Serial.print("Gagal menyimpan sidik jari. Kode: 0x"); Serial.println(p, HEX);
-    finger.LEDcontrol(FINGERPRINT_LED_SOLID, 10, FINGERPRINT_LED_RED, 1000);
-  }
-  delay(1000); 
-  finger.LEDcontrol(FINGERPRINT_LED_OFF);
+  finger.LEDcontrol(FINGERPRINT_LED_OFF); // Turn off LED after successful conversion or if an error occurred before this point
+  return FINGERPRINT_OK;
 }
 
 
-// Fungsi daftar sidik jari otomatis DENGAN notifikasi HTTP POST
-void enrollFingerprintAndNotify(int id) {
-  int p = -1;
-  Serial.print("Mendaftarkan (otomatis) ID #"); Serial.println(id);
-  Serial.println("Letakkan jari pertama...");
-  finger.LEDcontrol(FINGERPRINT_LED_ON, 255, FINGERPRINT_LED_BLUE); 
+// --- Helper: Perform the two-stage enrollment process ---
+uint8_t getFingerprintEnroll(int id) {
+  uint8_t p;
 
-  // --- Get Image 1 ---
-  while (p != FINGERPRINT_OK) {
-    p = finger.getImage();
-    switch (p) {
-      case FINGERPRINT_OK: Serial.println("Gambar diambil"); break;
-      case FINGERPRINT_NOFINGER: delay(50); break; // Wait for finger
-      case FINGERPRINT_PACKETRECIEVEERR: Serial.println("Kesalahan komunikasi"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-      case FINGERPRINT_IMAGEFAIL: Serial.println("Gagal mengambil gambar"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-      default: Serial.println("Kesalahan tidak diketahui saat getImage"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
+  // --- First Finger Scan ---
+  p = getFingerprintImageAndConvertToTemplate(1);
+  if (p != FINGERPRINT_OK) return p;
+
+  Serial.println("Remove finger.");
+  finger.LEDcontrol(FINGERPRINT_LED_FLASHING, 200, FINGERPRINT_LED_PURPLE); // Purple flashing to indicate remove finger
+  delay(1000); // Give user time to see message/LED
+  unsigned long start_remove_time = millis();
+  // Wait for finger to be removed
+  // Initialize getImage_status to something other than FINGERPRINT_NOFINGER to enter the loop
+  uint8_t getImage_status = FINGERPRINT_OK; 
+  while (getImage_status != FINGERPRINT_NOFINGER) {
+    getImage_status = finger.getImage();
+    delay(50);
+    if (millis() - start_remove_time > 5000) { // 5 sec timeout to remove finger
+        Serial.println("Timeout waiting for finger removal.");
+        finger.LEDcontrol(FINGERPRINT_LED_OFF);
+        return FINGERPRINT_TIMEOUT; 
     }
   }
+  Serial.println("Finger removed.");
+  finger.LEDcontrol(FINGERPRINT_LED_OFF);
 
-  // --- Convert Image 1 to Template ---
-  p = finger.image2Tz(1);
-  switch (p) {
-    case FINGERPRINT_OK: Serial.println("Gambar diubah ke template 1"); break;
-    case FINGERPRINT_IMAGEMESS: Serial.println("Gambar terlalu berantakan"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-    case FINGERPRINT_PACKETRECIEVEERR: Serial.println("Kesalahan komunikasi (image2Tz 1)"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-    case FINGERPRINT_FEATUREFAIL: Serial.println("Tidak dapat menemukan fitur sidik jari (image2Tz 1)"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-    case FINGERPRINT_INVALIDIMAGE: Serial.println("Gambar tidak valid (image2Tz 1)"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-    default: Serial.print("Gagal mengubah gambar ke template 1. Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-  }
-
-  Serial.println("Angkat jari...");
-  finger.LEDcontrol(FINGERPRINT_LED_FLASHING, 10, FINGERPRINT_LED_PURPLE, 250);
-  delay(1000); 
-  p = FINGERPRINT_OK; // Reset p to enter loop
-  while (p != FINGERPRINT_NOFINGER) { // Wait until finger is removed
-    p = finger.getImage(); // This is just to detect FINGERPRINT_NOFINGER
-    delay(50); 
-  }
-  Serial.println("Jari diangkat.");
-
-
-  Serial.println("Letakkan jari yang sama lagi...");
-  finger.LEDcontrol(FINGERPRINT_LED_ON, 255, FINGERPRINT_LED_BLUE);
-  p = -1; // Reset p for next getImage loop
-  // --- Get Image 2 ---
-  while (p != FINGERPRINT_OK) {
-    p = finger.getImage();
-    switch (p) {
-      case FINGERPRINT_OK: Serial.println("Gambar kedua diambil"); break;
-      case FINGERPRINT_NOFINGER: delay(50); break;
-      case FINGERPRINT_PACKETRECIEVEERR: Serial.println("Kesalahan komunikasi (getImage 2)"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-      case FINGERPRINT_IMAGEFAIL: Serial.println("Gagal mengambil gambar kedua"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-      default: Serial.print("Gagal mengambil gambar kedua. Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-    }
-  }
-
-  // --- Convert Image 2 to Template ---
-  p = finger.image2Tz(2);
-  switch (p) {
-    case FINGERPRINT_OK: Serial.println("Gambar kedua diubah ke template 2"); break;
-    // ... (add other specific error cases as for image2Tz(1))
-    default: Serial.print("Gagal mengubah gambar ke template 2. Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
-  }
+  // --- Second Finger Scan ---
+  p = getFingerprintImageAndConvertToTemplate(2);
+  if (p != FINGERPRINT_OK) return p;
 
   // --- Create Model ---
-  Serial.print("Membuat model untuk ID #"); Serial.println(id);
+  Serial.print("Creating model for ID #"); Serial.println(id);
+  finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); // Blue during processing
   p = finger.createModel();
   if (p == FINGERPRINT_OK) {
-    Serial.println("Sidik jari cocok! Model dibuat.");
+    Serial.println("Fingerprints matched! Model created.");
   } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
-    Serial.println("Kesalahan komunikasi (createModel)"); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
+    Serial.println("Communication error while creating model.");
+    finger.LEDcontrol(FINGERPRINT_LED_OFF); return p;
   } else if (p == FINGERPRINT_ENROLLMISMATCH) {
-    Serial.println("Sidik jari tidak cocok. Ulangi."); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
+    Serial.println("Fingerprints did not match. Please try again.");
+    finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); delay(1000); 
+    finger.LEDcontrol(FINGERPRINT_LED_OFF); return p;
   } else {
-    Serial.print("Gagal membuat model. Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
+    Serial.print("Unknown error while creating model: 0x"); Serial.println(p, HEX);
+    finger.LEDcontrol(FINGERPRINT_LED_OFF); return p;
   }
-
-  // --- Store Model ---
-  Serial.print("Menyimpan model ID #"); Serial.println(id);
-  p = finger.storeModel(id);
-  if (p == FINGERPRINT_OK) {
-    Serial.println("Pendaftaran berhasil!");
-    finger.LEDcontrol(FINGERPRINT_LED_SOLID, 10, FINGERPRINT_LED_GREEN, 1000); 
-
-    // --- Send HTTP POST Request for Enrollment ---
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient http;
-      String serverUrl = "http://" + String(serverHost) + ":" + String(serverPort) + String(serverEnrollPath);
-      
-      Serial.print("Mengirim POST request (enroll) ke: "); Serial.println(serverUrl);
-
-      http.begin(serverUrl); 
-      http.addHeader("Content-Type", "application/json");
-
-      String jsonPayload = "{\"status\":\"enrolled\", \"fingerId\":\"" + String(id) + "\"}";
-      Serial.print("Payload: "); Serial.println(jsonPayload);
-
-      int httpResponseCode = http.POST(jsonPayload);
-
-      if (httpResponseCode > 0) {
-        String response = http.getString();
-        Serial.print("HTTP Response code (enroll): "); Serial.println(httpResponseCode);
-        Serial.print("Response: "); Serial.println(response);
-      } else {
-        Serial.print("Error on sending POST (enroll): "); Serial.println(httpResponseCode);
-        Serial.printf("HTTP POST failed, error: %s\n", http.errorToString(httpResponseCode).c_str());
-      }
-      http.end(); 
-    } else {
-      Serial.println("WiFi tidak terhubung. Tidak dapat mengirim data pendaftaran.");
-    }
-    // --- End HTTP POST ---
-
-  } else {
-    Serial.print("Gagal menyimpan sidik jari. Kode: 0x"); Serial.println(p, HEX);
-    finger.LEDcontrol(FINGERPRINT_LED_SOLID, 10, FINGERPRINT_LED_RED, 1000); // Red LED for error
-  }
-  delay(1000); // Keep LED on for a bit
   finger.LEDcontrol(FINGERPRINT_LED_OFF);
+  return FINGERPRINT_OK;
 }
 
 
-// Fungsi login fingerprint
-void loginFingerprint() {
-  Serial.println("Letakkan jari untuk login...");
-  finger.LEDcontrol(FINGERPRINT_LED_ON, 255, FINGERPRINT_LED_BLUE); 
+// --- Manual Fingerprint Enrollment (no server notification) ---
+void enrollFingerprint_original(int id) {
+  Serial.print("Starting manual enrollment for ID #"); Serial.println(id);
 
-  int p = -1;
-  while (p != FINGERPRINT_OK) {
-    p = finger.getImage();
-    if (p == FINGERPRINT_NOFINGER) { delay(50); continue; }
-    if (p != FINGERPRINT_OK) {
-      Serial.println("Gagal mengambil gambar. Coba lagi."); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
+  uint8_t enroll_status = getFingerprintEnroll(id); // Use the helper function
+
+  if (enroll_status == FINGERPRINT_OK) {
+    Serial.print("Storing model at ID #"); Serial.println(id);
+    finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); // Blue during storage
+    uint8_t p = finger.storeModel(id);
+    if (p == FINGERPRINT_OK) {
+      Serial.println("Enrollment successful (manual)!");
+      finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); // Solid BLUE for success (GREEN not available)
+      delay(1500);
+    } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+      Serial.println("Communication error while storing model.");
+      finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); delay(1000);
+    } else if (p == FINGERPRINT_BADLOCATION) {
+      Serial.println("Invalid storage location (ID may be out of range or already taken).");
+      finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); delay(1000);
+    } else if (p == FINGERPRINT_FLASHERR) {
+      Serial.println("Error writing to flash memory.");
+      finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); delay(1000);
+    } else {
+      Serial.print("Unknown error while storing model: 0x"); Serial.println(p, HEX);
+      finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); delay(1000);
     }
+  } else {
+    Serial.println("Enrollment process failed. Please try again.");
+    // LED feedback for enroll_status failure already handled in getFingerprintEnroll or getFingerprintImageAndConvertToTemplate
   }
-  Serial.println("Gambar diambil.");
+  finger.LEDcontrol(FINGERPRINT_LED_OFF); // Ensure LED is off
+}
 
-  p = finger.image2Tz();
+
+// --- Auto Fingerprint Enrollment with Server Notification ---
+void enrollFingerprintAndNotify(int id) {
+  Serial.print("Starting automatic enrollment and notification for ID #"); Serial.println(id);
+
+  uint8_t enroll_status = getFingerprintEnroll(id); // Use the helper function
+
+  if (enroll_status == FINGERPRINT_OK) {
+    Serial.print("Storing model at ID #"); Serial.println(id);
+    finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); // Blue during storage
+    uint8_t p_store = finger.storeModel(id);
+
+    if (p_store == FINGERPRINT_OK) {
+      Serial.println("Enrollment successful! Sending data to server...");
+      finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); // BLUE for local success (GREEN not available)
+      delay(1000);
+      finger.LEDcontrol(FINGERPRINT_LED_OFF);
+
+      if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.setTimeout(10000); // 10 seconds timeout
+
+        String serverUrl = "http://" + String(serverHost) + ":" + String(serverPort) + String(serverEnrollPath);
+        Serial.print("Sending POST request (enroll) to: "); Serial.println(serverUrl);
+
+        http.begin(serverUrl);
+        http.addHeader("Content-Type", "application/json");
+
+        String jsonPayload = "{\"status\":\"enrolled\", \"fingerprint_id_real\":\"" + String(id) + "\"}";
+        Serial.print("Payload: "); Serial.println(jsonPayload);
+
+        int httpResponseCode = http.POST(jsonPayload);
+
+        if (httpResponseCode > 0) {
+          String response = http.getString();
+          Serial.print("HTTP Response code (enroll): "); Serial.println(httpResponseCode);
+          Serial.print("Response: "); Serial.println(response);
+          blinkLed(feedbackLedPin, 2, 100, 50); // Optional: Blink external LED green for server success
+        } else {
+          Serial.print("Error on sending POST (enroll): "); Serial.println(httpResponseCode);
+          Serial.printf("HTTP POST failed, error: %s\n", http.errorToString(httpResponseCode).c_str());
+          blinkLed(feedbackLedPin, 3, 300, 150); 
+        }
+        http.end();
+      } else {
+        Serial.println("WiFi not connected. Failed to send enrollment data to server.");
+        blinkLed(feedbackLedPin, 3, 300, 150);
+      }
+    } else { 
+        Serial.print("Failed to store model. Error: 0x"); Serial.println(p_store, HEX);
+        if (p_store == FINGERPRINT_PACKETRECIEVEERR) Serial.println("Communication error while storing.");
+        else if (p_store == FINGERPRINT_BADLOCATION) Serial.println("Bad storage location.");
+        else if (p_store == FINGERPRINT_FLASHERR) Serial.println("Flash write error.");
+        else Serial.println("Unknown error storing model.");
+        finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); delay(1000); 
+        finger.LEDcontrol(FINGERPRINT_LED_OFF);
+    }
+  } else {
+    Serial.println("Enrollment process failed. Please try again.");
+  }
+  finger.LEDcontrol(FINGERPRINT_LED_OFF); 
+}
+
+// --- Fingerprint Login ---
+void loginFingerprint() {
+  Serial.println("Starting login process. Place finger on sensor...");
+
+  uint8_t p = -1;
+  p = getFingerprintImageAndConvertToTemplate(1); 
+
   if (p != FINGERPRINT_OK) {
-    Serial.print("Gagal mengubah gambar ke template (login). Kode: 0x"); Serial.println(p, HEX); finger.LEDcontrol(FINGERPRINT_LED_OFF); return;
+    Serial.println("Login failed: Could not get valid fingerprint image.");
+    return;
   }
-  Serial.println("Gambar diubah ke template (login).");
 
-  p = finger.fingerSearch();
+  Serial.println("Searching for match...");
+  finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); 
+  p = finger.fingerFastSearch();
+  finger.LEDcontrol(FINGERPRINT_LED_OFF);
+
   if (p == FINGERPRINT_OK) {
-    Serial.print("Login berhasil! ID: "); Serial.println(finger.fingerID);
+    Serial.print("Fingerprint match found! ID: "); Serial.println(finger.fingerID);
     Serial.print("Confidence: "); Serial.println(finger.confidence);
+    finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_BLUE); // BLUE for successful match (GREEN not available)
+    delay(1000);
+    finger.LEDcontrol(FINGERPRINT_LED_OFF);
 
-    digitalWrite(loginLed, HIGH);
-    finger.LEDcontrol(FINGERPRINT_LED_SOLID, 10, FINGERPRINT_LED_GREEN, 3000);
+    relayOn();
+    delay(3000); 
+    relayOff();
 
-    // --- Send HTTP POST Request for Login ---
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient http;
-      String serverUrl = "http://" + String(serverHost) + ":" + String(serverPort) + String(serverLoginPath);
-      
-      Serial.print("Mengirim POST request (login) ke: "); Serial.println(serverUrl);
+      http.setTimeout(10000); 
 
-      http.begin(serverUrl); 
+      String serverUrl = "http://" + String(serverHost) + ":" + String(serverPort) + String(serverLoginPath);
+      Serial.print("Sending POST request (login) to: "); Serial.println(serverUrl);
+
+      http.begin(serverUrl);
       http.addHeader("Content-Type", "application/json");
 
-      String jsonPayload = "{\"fingerId\":\"" + String(finger.fingerID) + "\", \"confidence\":\"" + String(finger.confidence) + "\"}";
+      String jsonPayload = "{\"status\":\"login\", \"fingerprint_id_real\":\"" + String(finger.fingerID) + "\"}";
       Serial.print("Payload: "); Serial.println(jsonPayload);
 
       int httpResponseCode = http.POST(jsonPayload);
@@ -406,24 +449,24 @@ void loginFingerprint() {
       } else {
         Serial.print("Error on sending POST (login): "); Serial.println(httpResponseCode);
         Serial.printf("HTTP POST failed, error: %s\n", http.errorToString(httpResponseCode).c_str());
+        blinkLed(feedbackLedPin, 3, 300, 150); 
       }
-      http.end(); 
+      http.end();
     } else {
-      Serial.println("WiFi tidak terhubung. Tidak dapat mengirim data login.");
+      Serial.println("WiFi not connected. Failed to send login data to server.");
+      blinkLed(feedbackLedPin, 3, 300, 150);
     }
-    // --- End HTTP POST ---
-
-    delay(3000); 
-    digitalWrite(loginLed, LOW);
-
   } else if (p == FINGERPRINT_NOTFOUND) {
-    Serial.println("Sidik jari tidak dikenali.");
-    finger.LEDcontrol(FINGERPRINT_LED_SOLID, 10, FINGERPRINT_LED_RED, 1000); 
-  } else { // Covers FINGERPRINT_PACKETRECIEVEERR and other errors
-    Serial.print("Kesalahan saat mencari sidik jari. Kode: 0x"); Serial.println(p, HEX);
-    finger.LEDcontrol(FINGERPRINT_LED_SOLID, 10, FINGERPRINT_LED_RED, 1000);
+    Serial.println("Fingerprint not found in database.");
+    finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); 
+    delay(1000);
+    finger.LEDcontrol(FINGERPRINT_LED_OFF);
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    Serial.println("Communication error during search.");
+    finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); delay(1000); finger.LEDcontrol(FINGERPRINT_LED_OFF);
+  } else {
+    Serial.print("Unknown error during search: 0x"); Serial.println(p, HEX);
+    finger.LEDcontrol(FINGERPRINT_LED_ON, 0, FINGERPRINT_LED_RED); delay(1000); finger.LEDcontrol(FINGERPRINT_LED_OFF);
   }
-  
-  delay(1000); 
-  finger.LEDcontrol(FINGERPRINT_LED_OFF);
 }
+
